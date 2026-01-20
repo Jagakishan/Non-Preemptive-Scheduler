@@ -1,0 +1,12 @@
+../Core/Src/W25Q32.c:3:20:CSlow	8	static
+../Core/Src/W25Q32.c:7:20:CShigh	8	static
+../Core/Src/W25Q32.c:11:13:tx	32	static
+../Core/Src/W25Q32.c:16:13:tx_addr	16	static
+../Core/Src/W25Q32.c:22:16:rx	24	static
+../Core/Src/W25Q32.c:29:13:W25Q_writeEnable	8	static
+../Core/Src/W25Q32.c:35:16:W25Q_waitBusy	16	static
+../Core/Src/W25Q32.c:47:6:W25Q32_init	8	static
+../Core/Src/W25Q32.c:52:10:W25Q32_ReadID	16	static
+../Core/Src/W25Q32.c:65:6:W25Q32_Read	40	static
+../Core/Src/W25Q32.c:74:6:W25Q32_Write	24	static
+../Core/Src/W25Q32.c:88:6:W25Q32_SectorErase	16	static

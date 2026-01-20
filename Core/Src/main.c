@@ -22,7 +22,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
-
+#include <string.h>
+#include "W25Q32.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,15 +35,28 @@ typedef struct{
 	uint8_t functionEnabled;
 }tasks_struct;
 
+typedef struct{
+	uint32_t timestamp;
+	float accel_log[3], gyro_log[3], temperature_log;
+	uint32_t scaled_pressure_log;
+	int32_t scaled_temp_log;
+}data_logging_format;
+
+data_logging_format logger;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TASK_COUNT 5
+#define TASK_COUNT 6
 #define MPU_ADDRESS (0x68<<1)
 #define MPU_REG_ADDRESS 0x3B
 #define BMP_ADDRESS (0x76<<1)
 #define BMP_CALIB_REG_ADDRESS 0x88
+
+#define LOG_BUFFER_SIZE 2048
+#define SECTOR_SIZE 4096
+#define SECTORS_IN_USE 100 //We are not using all sectors
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,11 +67,17 @@ typedef struct{
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c2;
 
+SPI_HandleTypeDef hspi1;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 uint32_t now;
 int32_t t_fine;
+
+uint8_t logDataBuffer[LOG_BUFFER_SIZE];
+uint32_t currentSector=0x100000; //Starting from 256th sector so that the first 1MB of space is reserved in flash.
+uint16_t loggingIndex=0;
 
 static volatile uint8_t i2c_busy = 0;
 /* USER CODE END PV */
@@ -67,6 +87,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -294,6 +315,41 @@ void displayCurrentState(mpu_scaled_result_struct *mpu, bmp_raw_struct *bmp_raw,
     printf("Pressure: %lu, Temperature: %ld\r\n", bmp_scaled->scaled_pressure, bmp_scaled->scaled_temp);
 }
 
+void flushBuffer(){
+	W25Q32_SectorErase(currentSector);
+	W25Q32_Write(currentSector,(uint8_t *) &logger, loggingIndex);
+
+	currentSector += SECTOR_SIZE;
+
+	if(currentSector>SECTORS_IN_USE*SECTOR_SIZE){
+		currentSector=0x100000;
+	}
+}
+
+void log_data(mpu_scaled_result_struct *scaled, bmp_scaled_struct *bmp_scaled){
+	if(loggingIndex+sizeof(logger)>LOG_BUFFER_SIZE){
+		flushBuffer();
+	}
+
+	logger.accel_log[0]=scaled->accel[0];
+	logger.accel_log[1]=scaled->accel[1];
+	logger.accel_log[2]=scaled->accel[2];
+
+	logger.gyro_log[0]=scaled->gyro[0];
+	logger.gyro_log[1]=scaled->gyro[1];
+	logger.gyro_log[2]=scaled->gyro[2];
+
+	logger.temperature_log=scaled->temperature;
+
+	logger.scaled_pressure_log=bmp_scaled->scaled_pressure;
+	logger.scaled_temp_log=bmp_scaled->scaled_temp;
+
+	logger.timestamp=uwTick;
+
+	memcpy(&logDataBuffer[loggingIndex], &logger, sizeof(logger));
+	loggingIndex+=sizeof(logger);
+}
+
 void I2C_Lock(void)
 {
     while (i2c_busy);
@@ -332,12 +388,17 @@ void call_toggle(){
 	toggle();
 }
 
+void call_logger(){
+	log_data(&mpu_scaled, &bmp_scaled);
+}
+
 tasks_struct tasks[]={
 		{call_mpu, 50, 50, 1},
 		{call_bmp_raw, 200, 200, 1},
 		{call_bmp_scaling, 1000, 900, 1},
 		{call_displayCurrentState, 500, 500, 1},
-		{call_toggle, 1000, 1000, 1}
+		{call_toggle, 1000, 1000, 1},
+		{call_logger, 1000, 1000, 1}
 };
 
 void cooperativeScheduler(){
@@ -393,6 +454,7 @@ int main(void)
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   printf("-------Start------\r\n");
 
@@ -401,6 +463,13 @@ int main(void)
   HAL_Delay(1000);
   mpu_init();
   bmp_init();
+
+  W25Q32_init();
+
+  //Winbond Flash ID check
+  uint32_t flashID;
+  flashID=W25Q32_ReadID();
+  W25_DBG("Flash JEDEC ID= %#lX\r\n\n\n", flashID);
 
   //i2c_scan();
 
@@ -483,7 +552,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV2;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
@@ -517,8 +586,6 @@ static void MX_I2C2_Init(void)
   hi2c2.Init.OwnAddress2 = 0;
   hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  __HAL_RCC_I2C2_FORCE_RESET();
-  __HAL_RCC_I2C2_RELEASE_RESET();
   if (HAL_I2C_Init(&hi2c2) != HAL_OK)
   {
     Error_Handler();
@@ -526,6 +593,44 @@ static void MX_I2C2_Init(void)
   /* USER CODE BEGIN I2C2_Init 2 */
 
   /* USER CODE END I2C2_Init 2 */
+
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
 
 }
 
@@ -577,11 +682,14 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : LED_Pin */
   GPIO_InitStruct.Pin = LED_Pin;
@@ -589,6 +697,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : SPI_CS_Pin */
+  GPIO_InitStruct.Pin = SPI_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(SPI_CS_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
