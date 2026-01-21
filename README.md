@@ -1,14 +1,17 @@
 **Overview**
+
 This project is RTOS style cooperative(non-preemptive) scheduler that does sensor acquisition, scaling raw sensor values, transmission of data over CAN bus and logging scaled data for reference in periodic fashion.
 The system reads data from multislave sensors using a single I2C channel, computes scaled readable values in a seperate abstraction layer as it involves floating point math and cpu heavy math. Then transmits the 
 data over CAN bus which uses twisted pair cable to another node where the data is stored in a SPI-based flash in a circular fashion(oldest sector gets overwritten first). Apart from this, for debugging purpose
 a non-blocking UART is designed. The reason it being non-blocking is because it shouldn't hold CPU while high priority processes are waiting. I will give a elaborate explanation down.
 
 **Why No RTOS/FreeRTOS?**
+
 I haven't used FreeRTOS or any pre-built RTOS in this project. One reason being I have absolutely no idea how to use it and another reason is that using FreeRTOS for a cooperative scheduler is too much. So I just 
 scheduled everything on my own and made sure no process has to wait long to get executed.
 
 **CAN Integration**
+
 I have to tell this early. The CAN functionality is implemented as a standalone experiment in "Playing arount STM" repo due to the lack of a CAN transceiver in the current hardware setup. I have one(mcp2551 miniaturized ic like transceiver), but that's not working. So, I have put together a minimal initialization, data structuring, filter configuration code there. I does not have any relevance to this project.
 That's why the reading and logging code is put in the same "main.c" file.
 
